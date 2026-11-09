@@ -401,6 +401,26 @@ describe("plan execution mirrors into rpiv-todo", () => {
 		expect(rpiv.syncs.at(-1)?.items.map((item) => item.status)).toEqual(["completed", "in_progress"]);
 	});
 
+	test("syncs as soon as rpiv-todo announces it is ready for this session", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		let started = false;
+		const rpiv = fakeRpivTodo({ started: () => started });
+
+		const harness = createHarness(cwd, rpiv.bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		expect(lastWidget(harness.widgets)).toHaveLength(2);
+
+		started = true;
+		rpiv.bus.emit("rpiv:todo:ready", { sessionId: "another-session" });
+		expect(lastWidget(harness.widgets)).toHaveLength(2);
+		rpiv.bus.emit("rpiv:todo:ready", { sessionId: "test-session" });
+		await Promise.resolve();
+		expect(lastWidget(harness.widgets)).toBeUndefined();
+		expect(rpiv.syncs.at(-1)?.items.map((item) => item.status)).toEqual(["in_progress", "pending"]);
+	});
+
 	test("a probe that throws leaves the plan running with the widget", async () => {
 		const cwd = makeTempDir("plannotator-rpiv-todo-");
 		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);

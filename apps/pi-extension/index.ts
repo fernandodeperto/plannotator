@@ -52,7 +52,7 @@ import {
 	type PlannotatorPlanApprovedEvent,
 	registerPlannotatorEventListeners,
 } from "./plannotator-events.ts";
-import { resolveTodoProvider, type TodoProvider } from "./todo-providers/index.ts";
+import { RPIV_TODO_READY_EVENT, resolveTodoProvider, type TodoProvider } from "./todo-providers/index.ts";
 import {
 	findAssistantMessageByEntryId,
 	getAssistantMessageText,
@@ -517,6 +517,8 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	let todoProvider: TodoProvider | undefined;
 	/** Latch: a sync (or detection) failed. Cleared on return to idle. */
 	let todoProviderDisabled = false;
+	/** This session's ctx, for event-bus callbacks that arrive without one. */
+	let sessionCtx: ExtensionContext | undefined;
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionAlive = true;
@@ -525,6 +527,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 		claimSessionEventBus(pi);
 		currentPiSession.update(ctx);
 		settleAgentToolActivation(ctx);
+		sessionCtx = ctx;
 	});
 
 	/**
@@ -560,6 +563,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 		// session's bus.
 		stopPendingPlanReview();
 		sessionAlive = false;
+		sessionCtx = undefined;
 		releaseSessionEventBus(pi);
 		currentPiSession.clear();
 		// Browser sessions deliberately outlive in-process session replacement so
@@ -665,6 +669,16 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 			);
 		}
 	}
+
+	// On /reload or resume, rpiv-todo's session_start can run after ours, so the
+	// restore-time probe got no answer. Its ready event is the cue to sync now
+	// instead of showing both trackers until the next step completes.
+	pi.events.on(RPIV_TODO_READY_EVENT, (data) => {
+		const ctx = sessionCtx;
+		if (!ctx || todoProvider) return;
+		if ((data as { sessionId?: unknown } | null)?.sessionId !== ctx.sessionManager.getSessionId()) return;
+		void syncTodoProvider(ctx);
+	});
 
 	/**
 	 * Tag on the cwd-relative path: it is stable across machines and reads

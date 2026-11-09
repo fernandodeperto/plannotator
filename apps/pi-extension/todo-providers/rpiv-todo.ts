@@ -18,6 +18,8 @@ import type { TodoProvider, TodoProviderEnv } from "./types.ts";
 
 const SYNC_EVENT = "rpiv:todo:sync";
 const SYNC_RESULT_EVENT = "rpiv:todo:sync-result";
+/** rpiv-todo starts serving a session: `{ sessionId }`. */
+export const RPIV_TODO_READY_EVENT = "rpiv:todo:ready";
 const OWNER = "plannotator";
 /** Group for the detection probe. An empty list for it never writes anything. */
 const PROBE_GROUP = "plannotator:probe";

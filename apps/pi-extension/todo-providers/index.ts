@@ -5,6 +5,7 @@ import type { TodoProvider, TodoProviderEnv } from "./types.ts";
 
 export type { TodoProvider, TodoProviderEnv } from "./types.ts";
 export { detectPiTodos, resolveTodoDir } from "./pi-todos.ts";
+export { RPIV_TODO_READY_EVENT } from "./rpiv-todo.ts";
 
 /**
  * Pick a todo provider for this session, or undefined to stay widget-only.
