@@ -402,6 +402,8 @@ The Plannotator archive browser is available through the shared event API as `ar
 
 During execution, the agent marks completed steps with `[DONE:n]` markers. Progress is shown in the status line and as a checklist widget in the terminal. Pi shows at most 10 lines of a widget, so a longer checklist shows 10 items that keep the next open step in view: the first 10 until that step is past them, then a window that moves down one item per completed step. The status line keeps the full count (`📋 12/15`).
 
+With [rpiv-todo](https://github.com/juicesharp/rpiv-mono/tree/main/packages/rpiv-todo) installed, the checklist is mirrored into its todo overlay instead: completed steps show as done, the next open step as in progress, and the checklist widget is not drawn. The status line count stays. Leaving plan mode with steps still open removes the plan's rows from the overlay; a finished plan keeps them. The model's own todos are never changed. `PLANNOTATOR_TODO_PROVIDER=off` turns the mirror off and brings the widget back.
+
 ## Commands
 
 | Command | Description |

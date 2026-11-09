@@ -93,7 +93,7 @@ function createRuntime(initialTools: string[]) {
 		appendEntry: (_type: string, data: Record<string, unknown>) => {
 			persisted.push(data);
 		},
-		events: { on: () => () => undefined },
+		events: { on: () => () => undefined, emit: () => undefined },
 		getActiveTools: () => [...activeTools],
 		getFlag: () => false,
 		getThinkingLevel: () => "medium",
@@ -346,7 +346,7 @@ function createModelHost(options: { cwd: string; initialModel: ModelRef; entries
 		appendEntry: (customType: string, data: unknown) => {
 			host.entries.push({ type: "custom", customType, data });
 		},
-		events: { on: () => () => undefined },
+		events: { on: () => () => undefined, emit: () => undefined },
 		getActiveTools: () => [...tools.active],
 		getFlag: () => false,
 		getThinkingLevel: () => host.thinking,

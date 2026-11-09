@@ -52,7 +52,7 @@ function piSession() {
 	messageStart.length = 0;
 	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const pi = {
-		events: { on: () => undefined, emit: () => undefined },
+		events: { on: () => () => undefined, emit: () => undefined },
 		on: (event: string, handler: (event: unknown) => unknown) => {
 			if (event === "message_start") messageStart.push(handler);
 		},

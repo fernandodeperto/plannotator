@@ -604,7 +604,9 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
-		if (phase === "executing" && checklistItems.length > 0) {
+		// A live todo provider already shows the checklist on screen.
+		const providerShowsList = todoProvider?.live === true && !todoProviderDisabled;
+		if (phase === "executing" && checklistItems.length > 0 && !providerShowsList) {
 			// Pi draws at most 10 lines of a widget (#1412): show the 10 items
 			// around the next open one, so what the agent works on stays in view.
 			// UI only: setWidget never reaches the conversation or the prompt.
@@ -626,9 +628,10 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	/**
 	 * Mirror the checklist into an editable todo provider, when one is present.
 	 *
-	 * Additive by design: the progress widget above stays exactly as it was.
-	 * pi-todos renders its list on demand in `/todos` and has no live surface,
-	 * so replacing the widget with it would trade a visible tracker for files
+	 * A live provider (rpiv-todo's overlay) replaces the progress widget; the
+	 * widget comes back if that provider fails. pi-todos renders its list on
+	 * demand in `/todos` and has no live surface, so it stays additive:
+	 * replacing the widget with it would trade a visible tracker for files
 	 * behind a keystroke. Failures are swallowed after one notification —
 	 * a todo mirror must never break plan execution. Runs even when the
 	 * checklist is empty so a resubmitted-empty plan still reconciles
@@ -641,21 +644,50 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 			todoProvider = resolveTodoProvider(loadConfig(), {
 				cwd: ctx.cwd,
 				sessionId: ctx.sessionManager.getSessionId(),
+				events: pi.events,
 			});
 			if (!todoProvider) {
 				todoProviderDisabled = true;
 				return;
 			}
+			if (todoProvider.live) updateWidget(ctx);
 		}
-		// Tag on the cwd-relative path: it is stable across machines and reads
-		// cleanly in the /todos detail view, which renders raw tags.
-		const planId = relative(ctx.cwd, resolve(ctx.cwd, lastSubmittedPath)) || lastSubmittedPath;
 		try {
-			await todoProvider.sync(checklistItems, planId);
+			await todoProvider.sync(checklistItems, todoPlanId(ctx, lastSubmittedPath));
 		} catch (error) {
 			todoProviderDisabled = true;
+			if (todoProvider.live) updateWidget(ctx);
 			ctx.ui.notify(
 				`Plannotator: ${todoProvider.name} sync failed, continuing with the progress widget only. ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+				"warning",
+			);
+		}
+	}
+
+	/**
+	 * Tag on the cwd-relative path: it is stable across machines and reads
+	 * cleanly in the /todos detail view, which renders raw tags.
+	 */
+	function todoPlanId(ctx: ExtensionContext, planPath: string): string {
+		return relative(ctx.cwd, resolve(ctx.cwd, planPath)) || planPath;
+	}
+
+	/**
+	 * Leaving plan mode with steps still open abandons the plan: clear its rows
+	 * from a live provider, so the overlay does not keep showing work nothing
+	 * will finish. A finished plan keeps its rows as a record.
+	 */
+	async function clearAbandonedTodos(ctx: ExtensionContext): Promise<void> {
+		if (!todoProvider?.live || todoProviderDisabled || !lastSubmittedPath) return;
+		if (checklistItems.every((item) => item.completed)) return;
+		try {
+			await todoProvider.sync([], todoPlanId(ctx, lastSubmittedPath));
+		} catch (error) {
+			safeNotify(
+				ctx,
+				`Plannotator: could not clear the abandoned plan from ${todoProvider.name}. ${
 					error instanceof Error ? error.message : String(error)
 				}`,
 				"warning",
@@ -862,6 +894,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 		// Leaving plan mode abandons a plan still in review: its decision would
 		// arrive in a session that is no longer planning.
 		stopPendingPlanReview();
+		await clearAbandonedTodos(ctx);
 		phase = "idle";
 		framingDelivered = false;
 		// Every caller reaches here FROM planning or executing, so this is the

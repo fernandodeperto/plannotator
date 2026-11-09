@@ -116,7 +116,7 @@ function createRuntime(initialTools: string[] = ["read", "bash", "edit", "write"
 		appendEntry: (_type: string, data: Record<string, unknown>) => {
 			persisted.push(data);
 		},
-		events: { on: () => () => undefined },
+		events: { on: () => () => undefined, emit: () => undefined },
 		getActiveTools: () => [...activeTools],
 		getFlag: () => false,
 		getThinkingLevel: () => "medium",

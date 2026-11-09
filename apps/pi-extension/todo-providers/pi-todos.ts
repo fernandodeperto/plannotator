@@ -283,7 +283,7 @@ async function readOwnedTodos(todosDir: string, planId: string): Promise<Map<num
 	return owned;
 }
 
-export function createPiTodosProvider(env: TodoProviderEnv): TodoProvider {
+export function createPiTodosProvider(env: Pick<TodoProviderEnv, "cwd" | "sessionId">): TodoProvider {
 	// Serializes overlapping sync() calls on this instance. pi-todos has no
 	// atomic upsert: two syncs racing between readOwnedTodos and its writes
 	// would both see the same step as "missing" and each create a todo for
@@ -378,6 +378,7 @@ export function createPiTodosProvider(env: TodoProviderEnv): TodoProvider {
 
 	return {
 		name: "pi-todos",
+		live: false,
 
 		sync(items: ChecklistItem[], planId: string): Promise<void> {
 			const run = queue.then(() => runSync(items, planId));
