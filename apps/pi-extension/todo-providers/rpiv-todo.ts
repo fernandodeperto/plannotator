@@ -60,7 +60,7 @@ function requestSync(env: TodoProviderEnv, group: string, items: SyncItem[]): Sy
 }
 
 /** One item per step; the first open step is the one in progress. */
-export function toSyncItems(items: ChecklistItem[]): SyncItem[] {
+function toSyncItems(items: ChecklistItem[]): SyncItem[] {
 	const active = items.find((item) => !item.completed);
 	return items.map((item) => ({
 		key: `step:${item.step}`,

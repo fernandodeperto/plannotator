@@ -28,14 +28,26 @@ const checklist = (...completed: boolean[]): ChecklistItem[] =>
 
 let cwd: string;
 let bus: PiEventBus;
+let originalTodoProviderEnv: string | undefined;
+let originalPiTodoPath: string | undefined;
 
 beforeEach(async () => {
+	// An inherited PLANNOTATOR_TODO_PROVIDER=off would disable every provider,
+	// and an inherited PI_TODO_PATH would redirect pi-todos detection.
+	originalTodoProviderEnv = process.env.PLANNOTATOR_TODO_PROVIDER;
+	originalPiTodoPath = process.env.PI_TODO_PATH;
+	delete process.env.PLANNOTATOR_TODO_PROVIDER;
+	delete process.env.PI_TODO_PATH;
 	cwd = await fs.mkdtemp(path.join(os.tmpdir(), "plannotator-rpiv-todo-"));
 	bus = createPiEventBus();
 });
 
 afterEach(async () => {
 	await fs.rm(cwd, { recursive: true, force: true });
+	if (originalTodoProviderEnv === undefined) delete process.env.PLANNOTATOR_TODO_PROVIDER;
+	else process.env.PLANNOTATOR_TODO_PROVIDER = originalTodoProviderEnv;
+	if (originalPiTodoPath === undefined) delete process.env.PI_TODO_PATH;
+	else process.env.PI_TODO_PATH = originalPiTodoPath;
 });
 
 const env = () => ({ cwd, sessionId: "session-1", events: bus });

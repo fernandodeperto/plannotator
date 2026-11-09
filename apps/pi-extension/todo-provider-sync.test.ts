@@ -321,11 +321,13 @@ describe("plan execution mirrors into a detected todo provider", () => {
  * rpiv-todo's side of `rpiv:todo:sync`, answering inside `emit` like the real
  * extension on Pi's bus. `refuse` makes it reject plan syncs (not the probe).
  */
-function fakeRpivTodo(opts: { refuse?: () => boolean } = {}) {
+function fakeRpivTodo(opts: { refuse?: () => boolean; started?: () => boolean } = {}) {
 	const bus = createPiEventBus();
 	const syncs: Array<{ group: string; items: Array<{ key: string; status: string }> }> = [];
 	bus.on("rpiv:todo:sync", (data) => {
 		const request = data as { requestId: string; group: string; items: Array<{ key: string; status: string }> };
+		// Before its own session_start, rpiv-todo does not answer.
+		if (opts.started && !opts.started()) return;
 		if (request.group === "plannotator:probe") {
 			bus.emit("rpiv:todo:sync-result", { requestId: request.requestId, ok: true, live: true });
 			return;
@@ -379,6 +381,40 @@ describe("plan execution mirrors into rpiv-todo", () => {
 		await harness.endTurn("Finished the first bit. [DONE:1]");
 
 		expect(harness.notifications.filter((note) => note.includes("rpiv-todo sync failed"))).toHaveLength(1);
+		expect(lastWidget(harness.widgets)).toHaveLength(2);
+	});
+
+	test("finds rpiv-todo at a later sync when it was not answering yet", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		let started = false;
+		const rpiv = fakeRpivTodo({ started: () => started });
+
+		const harness = createHarness(cwd, rpiv.bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		expect(lastWidget(harness.widgets)).toHaveLength(2);
+
+		started = true;
+		await harness.markStepDone(1);
+		expect(lastWidget(harness.widgets)).toBeUndefined();
+		expect(rpiv.syncs.at(-1)?.items.map((item) => item.status)).toEqual(["completed", "in_progress"]);
+	});
+
+	test("a probe that throws leaves the plan running with the widget", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		const bus = createPiEventBus();
+		bus.on("rpiv:todo:sync", () => {
+			throw new Error("listener blew up");
+		});
+
+		const harness = createHarness(cwd, bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		await harness.markStepDone(1);
+
+		expect(harness.notifications.filter((note) => note.includes("sync failed"))).toHaveLength(1);
 		expect(lastWidget(harness.widgets)).toHaveLength(2);
 	});
 

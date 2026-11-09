@@ -513,9 +513,9 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	let sessionAlive = true;
 	/** The plan review waiting on the reviewer, if any (see PendingPlanReview). */
 	let pendingPlanReview: PendingPlanReview | null = null;
-	/** Resolved once per execution phase; undefined means widget-only. */
+	/** Resolved once per execution phase, at the first sync that finds one; undefined means widget-only. */
 	let todoProvider: TodoProvider | undefined;
-	/** Latch: no provider found, or one sync failed. Cleared on return to idle. */
+	/** Latch: a sync (or detection) failed. Cleared on return to idle. */
 	let todoProviderDisabled = false;
 
 	pi.on("session_start", (_event, ctx) => {
@@ -640,25 +640,25 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	async function syncTodoProvider(ctx: ExtensionContext): Promise<void> {
 		if (todoProviderDisabled) return;
 		if (phase !== "executing" || !lastSubmittedPath) return;
-		if (!todoProvider) {
-			todoProvider = resolveTodoProvider(loadConfig(), {
-				cwd: ctx.cwd,
-				sessionId: ctx.sessionManager.getSessionId(),
-				events: pi.events,
-			});
-			if (!todoProvider) {
-				todoProviderDisabled = true;
-				return;
-			}
-			if (todoProvider.live) updateWidget(ctx);
-		}
 		try {
+			if (!todoProvider) {
+				// Probed again on every sync until one answers: on resume, a
+				// provider extension may start its session after this one does.
+				todoProvider = resolveTodoProvider(loadConfig(), {
+					cwd: ctx.cwd,
+					sessionId: ctx.sessionManager.getSessionId(),
+					events: pi.events,
+				});
+				if (!todoProvider) return;
+				if (todoProvider.live) updateWidget(ctx);
+			}
 			await todoProvider.sync(checklistItems, todoPlanId(ctx, lastSubmittedPath));
 		} catch (error) {
+			// Detection talks to other extensions too, so it fails the same way.
 			todoProviderDisabled = true;
-			if (todoProvider.live) updateWidget(ctx);
+			updateWidget(ctx);
 			ctx.ui.notify(
-				`Plannotator: ${todoProvider.name} sync failed, continuing with the progress widget only. ${
+				`Plannotator: ${todoProvider?.name ?? "todo provider"} sync failed, continuing with the progress widget only. ${
 					error instanceof Error ? error.message : String(error)
 				}`,
 				"warning",
