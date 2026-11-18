@@ -51,7 +51,7 @@ function createHarness(cwd: string) {
 	};
 
 	const pi = {
-		events: { on: () => undefined, emit: () => undefined },
+		events: { on: () => () => undefined, emit: () => undefined },
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
 			const list = handlers.get(event) ?? [];
 			list.push(handler);

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createPiEventBus, type PiEventBus } from "../../tests/helpers/pi-event-bus.ts";
 import plannotator from "./index.ts";
 
 /**
@@ -49,7 +50,7 @@ afterEach(() => {
 	restoreEnv("PLANNOTATOR_TODO_PROVIDER", originalTodoProviderEnv);
 });
 
-function createHarness(cwd: string) {
+function createHarness(cwd: string, events: Pick<PiEventBus, "on" | "emit"> = { on: () => () => undefined, emit: () => undefined }) {
 	const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
 	const tools = new Map<string, { execute: (...args: unknown[]) => Promise<unknown> }>();
 	const handlers = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
@@ -58,7 +59,7 @@ function createHarness(cwd: string) {
 	const state = { activeTools: ["read", "bash", "edit", "write"], thinkingLevel: "medium" };
 
 	const pi = {
-		events: { on: () => undefined, emit: () => undefined },
+		events,
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
 			const eventHandlers = handlers.get(event) ?? [];
 			eventHandlers.push(handler);
@@ -313,5 +314,156 @@ describe("plan execution mirrors into a detected todo provider", () => {
 		// keeps rendering progress after the provider latches disabled.
 		const rendered = harness.widgets.filter((content): content is string[] => Array.isArray(content));
 		expect(rendered.at(-1)).toHaveLength(2);
+	});
+});
+
+/**
+ * rpiv-todo's side of `rpiv:todo:sync`, answering inside `emit` like the real
+ * extension on Pi's bus. `refuse` makes it reject plan syncs (not the probe).
+ */
+function fakeRpivTodo(opts: { refuse?: () => boolean; started?: () => boolean } = {}) {
+	const bus = createPiEventBus();
+	const syncs: Array<{ group: string; items: Array<{ key: string; status: string }> }> = [];
+	bus.on("rpiv:todo:sync", (data) => {
+		const request = data as { requestId: string; group: string; items: Array<{ key: string; status: string }> };
+		// Before its own session_start, rpiv-todo does not answer.
+		if (opts.started && !opts.started()) return;
+		if (request.group === "plannotator:probe") {
+			bus.emit("rpiv:todo:sync-result", { requestId: request.requestId, ok: true, live: true });
+			return;
+		}
+		syncs.push({ group: request.group, items: request.items });
+		bus.emit(
+			"rpiv:todo:sync-result",
+			opts.refuse?.()
+				? { requestId: request.requestId, ok: false, code: "invalid_payload", reason: "refused" }
+				: { requestId: request.requestId, ok: true, live: true },
+		);
+	});
+	return { bus, syncs };
+}
+
+const lastWidget = (widgets: Array<string[] | undefined>) => widgets.at(-1);
+
+describe("plan execution mirrors into rpiv-todo", () => {
+	test("hides the progress widget while rpiv-todo shows the steps", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		const rpiv = fakeRpivTodo();
+
+		const harness = createHarness(cwd, rpiv.bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		expect(lastWidget(harness.widgets)).toBeUndefined();
+		expect(rpiv.syncs.at(-1)).toEqual({
+			group: "PLAN.md",
+			items: [
+				expect.objectContaining({ key: "step:1", status: "in_progress" }),
+				expect.objectContaining({ key: "step:2", status: "pending" }),
+			],
+		});
+
+		await harness.endTurn("Finished the first bit. [DONE:1]");
+		expect(lastWidget(harness.widgets)).toBeUndefined();
+		expect(rpiv.syncs.at(-1)?.items.map((item) => item.status)).toEqual(["completed", "in_progress"]);
+	});
+
+	test("brings the widget back when rpiv-todo refuses a sync", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		let refusing = false;
+		const rpiv = fakeRpivTodo({ refuse: () => refusing });
+
+		const harness = createHarness(cwd, rpiv.bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		refusing = true;
+		await harness.endTurn("Finished the first bit. [DONE:1]");
+
+		expect(harness.notifications.filter((note) => note.includes("rpiv-todo sync failed"))).toHaveLength(1);
+		expect(lastWidget(harness.widgets)).toHaveLength(2);
+	});
+
+	test("finds rpiv-todo at a later sync when it was not answering yet", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		let started = false;
+		const rpiv = fakeRpivTodo({ started: () => started });
+
+		const harness = createHarness(cwd, rpiv.bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		expect(lastWidget(harness.widgets)).toHaveLength(2);
+
+		started = true;
+		await harness.markStepDone(1);
+		expect(lastWidget(harness.widgets)).toBeUndefined();
+		expect(rpiv.syncs.at(-1)?.items.map((item) => item.status)).toEqual(["completed", "in_progress"]);
+	});
+
+	test("syncs as soon as rpiv-todo announces it is ready for this session", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		let started = false;
+		const rpiv = fakeRpivTodo({ started: () => started });
+
+		const harness = createHarness(cwd, rpiv.bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		expect(lastWidget(harness.widgets)).toHaveLength(2);
+
+		started = true;
+		rpiv.bus.emit("rpiv:todo:ready", { sessionId: "another-session" });
+		expect(lastWidget(harness.widgets)).toHaveLength(2);
+		rpiv.bus.emit("rpiv:todo:ready", { sessionId: "test-session" });
+		await Promise.resolve();
+		expect(lastWidget(harness.widgets)).toBeUndefined();
+		expect(rpiv.syncs.at(-1)?.items.map((item) => item.status)).toEqual(["in_progress", "pending"]);
+	});
+
+	test("a probe that throws leaves the plan running with the widget", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		const bus = createPiEventBus();
+		bus.on("rpiv:todo:sync", () => {
+			throw new Error("listener blew up");
+		});
+
+		const harness = createHarness(cwd, bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		await harness.markStepDone(1);
+
+		expect(harness.notifications.filter((note) => note.includes("sync failed"))).toHaveLength(1);
+		expect(lastWidget(harness.widgets)).toHaveLength(2);
+	});
+
+	test("leaving plan mode with open steps clears the plan from rpiv-todo", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		const rpiv = fakeRpivTodo();
+
+		const harness = createHarness(cwd, rpiv.bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		await harness.markStepDone(1);
+		await harness.toggle();
+
+		expect(rpiv.syncs.at(-1)).toEqual({ group: "PLAN.md", items: [] });
+	});
+
+	test("a finished plan keeps its rows when plan mode ends", async () => {
+		const cwd = makeTempDir("plannotator-rpiv-todo-");
+		writeFileSync(join(cwd, "PLAN.md"), PLAN_CONTENT);
+		const rpiv = fakeRpivTodo();
+
+		const harness = createHarness(cwd, rpiv.bus);
+		await harness.startSession();
+		await harness.submitPlan("PLAN.md");
+		await harness.markStepDone(1);
+		await harness.markStepDone(2);
+		await harness.toggle();
+
+		expect(rpiv.syncs.at(-1)?.items.map((item) => item.status)).toEqual(["completed", "completed"]);
 	});
 });

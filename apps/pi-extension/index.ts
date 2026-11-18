@@ -52,7 +52,7 @@ import {
 	type PlannotatorPlanApprovedEvent,
 	registerPlannotatorEventListeners,
 } from "./plannotator-events.ts";
-import { resolveTodoProvider, type TodoProvider } from "./todo-providers/index.ts";
+import { RPIV_TODO_READY_EVENT, resolveTodoProvider, type TodoProvider } from "./todo-providers/index.ts";
 import {
 	findAssistantMessageByEntryId,
 	getAssistantMessageText,
@@ -513,10 +513,12 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	let sessionAlive = true;
 	/** The plan review waiting on the reviewer, if any (see PendingPlanReview). */
 	let pendingPlanReview: PendingPlanReview | null = null;
-	/** Resolved once per execution phase; undefined means widget-only. */
+	/** Resolved once per execution phase, at the first sync that finds one; undefined means widget-only. */
 	let todoProvider: TodoProvider | undefined;
-	/** Latch: no provider found, or one sync failed. Cleared on return to idle. */
+	/** Latch: a sync (or detection) failed. Cleared on return to idle. */
 	let todoProviderDisabled = false;
+	/** This session's ctx, for event-bus callbacks that arrive without one. */
+	let sessionCtx: ExtensionContext | undefined;
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionAlive = true;
@@ -525,6 +527,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 		claimSessionEventBus(pi);
 		currentPiSession.update(ctx);
 		settleAgentToolActivation(ctx);
+		sessionCtx = ctx;
 	});
 
 	/**
@@ -560,6 +563,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 		// session's bus.
 		stopPendingPlanReview();
 		sessionAlive = false;
+		sessionCtx = undefined;
 		releaseSessionEventBus(pi);
 		currentPiSession.clear();
 		// Browser sessions deliberately outlive in-process session replacement so
@@ -604,7 +608,9 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
-		if (phase === "executing" && checklistItems.length > 0) {
+		// A live todo provider already shows the checklist on screen.
+		const providerShowsList = todoProvider?.live === true && !todoProviderDisabled;
+		if (phase === "executing" && checklistItems.length > 0 && !providerShowsList) {
 			// Pi draws at most 10 lines of a widget (#1412): show the 10 items
 			// around the next open one, so what the agent works on stays in view.
 			// UI only: setWidget never reaches the conversation or the prompt.
@@ -626,9 +632,10 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	/**
 	 * Mirror the checklist into an editable todo provider, when one is present.
 	 *
-	 * Additive by design: the progress widget above stays exactly as it was.
-	 * pi-todos renders its list on demand in `/todos` and has no live surface,
-	 * so replacing the widget with it would trade a visible tracker for files
+	 * A live provider (rpiv-todo's overlay) replaces the progress widget; the
+	 * widget comes back if that provider fails. pi-todos renders its list on
+	 * demand in `/todos` and has no live surface, so it stays additive:
+	 * replacing the widget with it would trade a visible tracker for files
 	 * behind a keystroke. Failures are swallowed after one notification —
 	 * a todo mirror must never break plan execution. Runs even when the
 	 * checklist is empty so a resubmitted-empty plan still reconciles
@@ -637,25 +644,64 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 	async function syncTodoProvider(ctx: ExtensionContext): Promise<void> {
 		if (todoProviderDisabled) return;
 		if (phase !== "executing" || !lastSubmittedPath) return;
-		if (!todoProvider) {
-			todoProvider = resolveTodoProvider(loadConfig(), {
-				cwd: ctx.cwd,
-				sessionId: ctx.sessionManager.getSessionId(),
-			});
-			if (!todoProvider) {
-				todoProviderDisabled = true;
-				return;
-			}
-		}
-		// Tag on the cwd-relative path: it is stable across machines and reads
-		// cleanly in the /todos detail view, which renders raw tags.
-		const planId = relative(ctx.cwd, resolve(ctx.cwd, lastSubmittedPath)) || lastSubmittedPath;
 		try {
-			await todoProvider.sync(checklistItems, planId);
+			if (!todoProvider) {
+				// Probed again on every sync until one answers: on resume, a
+				// provider extension may start its session after this one does.
+				todoProvider = resolveTodoProvider(loadConfig(), {
+					cwd: ctx.cwd,
+					sessionId: ctx.sessionManager.getSessionId(),
+					events: pi.events,
+				});
+				if (!todoProvider) return;
+				if (todoProvider.live) updateWidget(ctx);
+			}
+			await todoProvider.sync(checklistItems, todoPlanId(ctx, lastSubmittedPath));
 		} catch (error) {
+			// Detection talks to other extensions too, so it fails the same way.
 			todoProviderDisabled = true;
+			updateWidget(ctx);
 			ctx.ui.notify(
-				`Plannotator: ${todoProvider.name} sync failed, continuing with the progress widget only. ${
+				`Plannotator: ${todoProvider?.name ?? "todo provider"} sync failed, continuing with the progress widget only. ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+				"warning",
+			);
+		}
+	}
+
+	// On /reload or resume, rpiv-todo's session_start can run after ours, so the
+	// restore-time probe got no answer. Its ready event is the cue to sync now
+	// instead of showing both trackers until the next step completes.
+	pi.events.on(RPIV_TODO_READY_EVENT, (data) => {
+		const ctx = sessionCtx;
+		if (!ctx || todoProvider) return;
+		if ((data as { sessionId?: unknown } | null)?.sessionId !== ctx.sessionManager.getSessionId()) return;
+		void syncTodoProvider(ctx);
+	});
+
+	/**
+	 * Tag on the cwd-relative path: it is stable across machines and reads
+	 * cleanly in the /todos detail view, which renders raw tags.
+	 */
+	function todoPlanId(ctx: ExtensionContext, planPath: string): string {
+		return relative(ctx.cwd, resolve(ctx.cwd, planPath)) || planPath;
+	}
+
+	/**
+	 * Leaving plan mode with steps still open abandons the plan: clear its rows
+	 * from a live provider, so the overlay does not keep showing work nothing
+	 * will finish. A finished plan keeps its rows as a record.
+	 */
+	async function clearAbandonedTodos(ctx: ExtensionContext): Promise<void> {
+		if (!todoProvider?.live || todoProviderDisabled || !lastSubmittedPath) return;
+		if (checklistItems.every((item) => item.completed)) return;
+		try {
+			await todoProvider.sync([], todoPlanId(ctx, lastSubmittedPath));
+		} catch (error) {
+			safeNotify(
+				ctx,
+				`Plannotator: could not clear the abandoned plan from ${todoProvider.name}. ${
 					error instanceof Error ? error.message : String(error)
 				}`,
 				"warning",
@@ -862,6 +908,7 @@ export default function plannotator(pi: ExtensionAPI, deps: PlannotatorExtension
 		// Leaving plan mode abandons a plan still in review: its decision would
 		// arrive in a session that is no longer planning.
 		stopPendingPlanReview();
+		await clearAbandonedTodos(ctx);
 		phase = "idle";
 		framingDelivered = false;
 		// Every caller reaches here FROM planning or executing, so this is the

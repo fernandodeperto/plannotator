@@ -1,15 +1,19 @@
 import { type PlannotatorConfig, resolveTodoProviderEnabled } from "../generated/config.ts";
 import { createPiTodosProvider, detectPiTodos } from "./pi-todos.ts";
+import { detectRpivTodo } from "./rpiv-todo.ts";
 import type { TodoProvider, TodoProviderEnv } from "./types.ts";
 
 export type { TodoProvider, TodoProviderEnv } from "./types.ts";
 export { detectPiTodos, resolveTodoDir } from "./pi-todos.ts";
+export { RPIV_TODO_READY_EVENT } from "./rpiv-todo.ts";
 
 /**
  * Pick a todo provider for this session, or undefined to stay widget-only.
  *
- * Only pi-todos is implemented today. oh-my-pi's native todo panel is the
- * obvious second provider, but as of omp 17.1.5 the panel repaint is gated to
+ * rpiv-todo goes first: it draws the list live, so it can replace the progress
+ * widget. pi-todos is the fallback. One provider per execution, never both.
+ *
+ * oh-my-pi's native todo panel is the obvious next provider, but as of omp 17.1.5 the panel repaint is gated to
  * the built-in `todo` tool (`modes/controllers/event-controller.ts`, plus the
  * same guard in `session/agent-session.ts`), and the session handed to an
  * extension-registered tool is a read-only projection without the todo
@@ -22,6 +26,8 @@ export function resolveTodoProvider(
 	env: TodoProviderEnv,
 ): TodoProvider | undefined {
 	if (!resolveTodoProviderEnabled(config)) return undefined;
+	const rpivTodo = detectRpivTodo(env);
+	if (rpivTodo) return rpivTodo;
 	if (!detectPiTodos(env.cwd)) return undefined;
 	return createPiTodosProvider(env);
 }

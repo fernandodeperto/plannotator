@@ -11,6 +11,7 @@ import {
 	resolveTodoDir,
 } from "./pi-todos.ts";
 import { resolveTodoProvider } from "./index.ts";
+import { createPiEventBus as createBus } from "../../../tests/helpers/pi-event-bus.ts";
 
 /**
  * ── Format oracle ────────────────────────────────────────────────────────────
@@ -369,7 +370,7 @@ describe("pi-todos containment", () => {
 		await fs.symlink(outside, path.join(project, ".pi", "todos"), "dir");
 
 		expect(detectPiTodos(project)).toBe(false);
-		expect(resolveTodoProvider({}, { cwd: project })).toBeUndefined();
+		expect(resolveTodoProvider({}, { cwd: project, events: createBus() })).toBeUndefined();
 
 		// Even constructed directly — the provider must fail closed, not trust
 		// that detection already ran.
@@ -470,17 +471,17 @@ describe("pi-todos containment", () => {
 
 describe("provider resolution", () => {
 	test("returns the pi-todos provider when detected", () => {
-		expect(resolveTodoProvider({}, { cwd })?.name).toBe("pi-todos");
+		expect(resolveTodoProvider({}, { cwd, events: createBus() })?.name).toBe("pi-todos");
 	});
 
 	test("returns nothing when todoProvider is off", () => {
-		expect(resolveTodoProvider({ todoProvider: "off" }, { cwd })).toBeUndefined();
+		expect(resolveTodoProvider({ todoProvider: "off" }, { cwd, events: createBus() })).toBeUndefined();
 	});
 
 	test("returns nothing when no provider is present", async () => {
 		const bare = await fs.mkdtemp(path.join(os.tmpdir(), "plannotator-bare-"));
 		try {
-			expect(resolveTodoProvider({}, { cwd: bare })).toBeUndefined();
+			expect(resolveTodoProvider({}, { cwd: bare, events: createBus() })).toBeUndefined();
 		} finally {
 			await fs.rm(bare, { recursive: true, force: true });
 		}

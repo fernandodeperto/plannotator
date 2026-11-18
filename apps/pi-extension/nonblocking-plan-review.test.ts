@@ -57,7 +57,7 @@ function createHarness(cwd: string, options: { host?: "pi" | "oh-my-pi"; idle?: 
 	const pi = {
 		// What tells Oh My Pi's ExtensionAPI from Pi's (pi-host.ts).
 		...(options.host === "oh-my-pi" ? { arktype: () => undefined, pi: {} } : {}),
-		events: { on: () => undefined, emit: () => undefined },
+		events: { on: () => () => undefined, emit: () => undefined },
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},

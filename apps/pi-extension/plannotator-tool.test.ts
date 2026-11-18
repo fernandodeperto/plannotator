@@ -104,7 +104,7 @@ function createHarness(options: { sessionId?: string; hasUI?: boolean; branch?: 
 	let stale = false;
 
 	const pi = {
-		events: { on: () => undefined, emit: () => undefined },
+		events: { on: () => () => undefined, emit: () => undefined },
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},

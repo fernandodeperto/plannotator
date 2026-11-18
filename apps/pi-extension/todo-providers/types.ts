@@ -1,3 +1,4 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ChecklistItem } from "../generated/checklist.ts";
 
 /**
@@ -11,6 +12,12 @@ import type { ChecklistItem } from "../generated/checklist.ts";
 export interface TodoProvider {
 	/** Stable identifier, surfaced in notifications. */
 	readonly name: string;
+	/**
+	 * True when the provider draws the list on screen itself, so the progress
+	 * widget would only duplicate it. False for providers whose list lives
+	 * behind a command.
+	 */
+	readonly live: boolean;
 	/**
 	 * Make the provider match `items` for the given plan.
 	 *
@@ -29,4 +36,6 @@ export interface TodoProviderEnv {
 	cwd: string;
 	/** Session id, recorded as the owning session when available. */
 	sessionId?: string;
+	/** Pi's extension event bus, for providers that live in another extension. */
+	events: Pick<ExtensionAPI["events"], "emit" | "on">;
 }

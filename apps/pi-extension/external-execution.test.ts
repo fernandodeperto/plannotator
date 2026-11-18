@@ -39,7 +39,7 @@ function createHarness(cwd: string) {
 
 	const pi = {
 		events: {
-			on: () => undefined,
+			on: () => () => undefined,
 			emit: (channel: string, payload: unknown) => emitted.push({ channel, payload }),
 		},
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
